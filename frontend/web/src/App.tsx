@@ -5,24 +5,34 @@ import { getContractReadOnly, getContractWithSigner } from "./components/useCont
 import "./App.css";
 import { useAccount } from 'wagmi';
 import { useFhevm, useEncrypt, useDecrypt } from '../fhevm-sdk/src';
+import { ethers } from 'ethers';
 
-interface ContractData {
+interface LegalContract {
   id: string;
   name: string;
   encryptedValue: string;
   publicValue1: number;
   publicValue2: number;
   description: string;
-  timestamp: number;
   creator: string;
-  isVerified?: boolean;
-  decryptedValue?: number;
+  timestamp: number;
+  isVerified: boolean;
+  decryptedValue: number;
+  category: string;
+  status: string;
+}
+
+interface ContractStats {
+  totalContracts: number;
+  verifiedContracts: number;
+  activeContracts: number;
+  avgValue: number;
 }
 
 const App: React.FC = () => {
   const { address, isConnected } = useAccount();
   const [loading, setLoading] = useState(true);
-  const [contracts, setContracts] = useState<ContractData[]>([]);
+  const [contracts, setContracts] = useState<LegalContract[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creatingContract, setCreatingContract] = useState(false);
@@ -35,15 +45,17 @@ const App: React.FC = () => {
     name: "", 
     value: "", 
     description: "",
-    publicValue1: "",
-    publicValue2: ""
+    category: "法律",
+    status: "active"
   });
-  const [selectedContract, setSelectedContract] = useState<ContractData | null>(null);
+  const [selectedContract, setSelectedContract] = useState<LegalContract | null>(null);
+  const [decryptedData, setDecryptedData] = useState<number | null>(null);
   const [isDecrypting, setIsDecrypting] = useState(false);
   const [contractAddress, setContractAddress] = useState("");
   const [fhevmInitializing, setFhevmInitializing] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
-  const [stats, setStats] = useState({ total: 0, verified: 0, pending: 0 });
+  const [activeTab, setActiveTab] = useState("all");
+  const [showFAQ, setShowFAQ] = useState(false);
 
   const { status, initialize, isInitialized } = useFhevm();
   const { encrypt, isEncrypting } = useEncrypt();
@@ -57,10 +69,11 @@ const App: React.FC = () => {
         setFhevmInitializing(true);
         await initialize();
       } catch (error) {
+        console.error('FHEVM initialization failed:', error);
         setTransactionStatus({ 
           visible: true, 
           status: "error", 
-          message: "FHEVM initialization failed" 
+          message: "FHEVM初始化失败" 
         });
         setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       } finally {
@@ -79,11 +92,11 @@ const App: React.FC = () => {
       }
       
       try {
-        await loadData();
+        await loadContracts();
         const contract = await getContractReadOnly();
         if (contract) setContractAddress(await contract.getAddress());
       } catch (error) {
-        console.error('Failed to load data:', error);
+        console.error('数据加载失败:', error);
       } finally {
         setLoading(false);
       }
@@ -92,13 +105,7 @@ const App: React.FC = () => {
     loadDataAndContract();
   }, [isConnected]);
 
-  useEffect(() => {
-    const verified = contracts.filter(c => c.isVerified).length;
-    const pending = contracts.filter(c => !c.isVerified).length;
-    setStats({ total: contracts.length, verified, pending });
-  }, [contracts]);
-
-  const loadData = async () => {
+  const loadContracts = async () => {
     if (!isConnected) return;
     
     setIsRefreshing(true);
@@ -107,7 +114,7 @@ const App: React.FC = () => {
       if (!contract) return;
       
       const businessIds = await contract.getAllBusinessIds();
-      const contractsList: ContractData[] = [];
+      const contractsList: LegalContract[] = [];
       
       for (const businessId of businessIds) {
         try {
@@ -119,19 +126,21 @@ const App: React.FC = () => {
             publicValue1: Number(businessData.publicValue1) || 0,
             publicValue2: Number(businessData.publicValue2) || 0,
             description: businessData.description,
-            timestamp: Number(businessData.timestamp),
             creator: businessData.creator,
+            timestamp: Number(businessData.timestamp),
             isVerified: businessData.isVerified,
-            decryptedValue: Number(businessData.decryptedValue) || 0
+            decryptedValue: Number(businessData.decryptedValue) || 0,
+            category: "法律",
+            status: "active"
           });
         } catch (e) {
-          console.error('Error loading business data:', e);
+          console.error('合同数据加载错误:', e);
         }
       }
       
       setContracts(contractsList);
     } catch (e) {
-      setTransactionStatus({ visible: true, status: "error", message: "Failed to load data" });
+      setTransactionStatus({ visible: true, status: "error", message: "数据加载失败" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
       setIsRefreshing(false); 
@@ -140,17 +149,17 @@ const App: React.FC = () => {
 
   const createContract = async () => {
     if (!isConnected || !address) { 
-      setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
+      setTransactionStatus({ visible: true, status: "error", message: "请先连接钱包" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return; 
     }
     
     setCreatingContract(true);
-    setTransactionStatus({ visible: true, status: "pending", message: "Creating contract with Zama FHE..." });
+    setTransactionStatus({ visible: true, status: "pending", message: "使用Zama FHE创建加密合同..." });
     
     try {
       const contract = await getContractWithSigner();
-      if (!contract) throw new Error("Failed to get contract with signer");
+      if (!contract) throw new Error("合约连接失败");
       
       const contractValue = parseInt(newContractData.value) || 0;
       const businessId = `contract-${Date.now()}`;
@@ -162,26 +171,26 @@ const App: React.FC = () => {
         newContractData.name,
         encryptedResult.encryptedData,
         encryptedResult.proof,
-        parseInt(newContractData.publicValue1) || 0,
-        parseInt(newContractData.publicValue2) || 0,
+        contractValue,
+        0,
         newContractData.description
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Waiting for transaction confirmation..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "等待交易确认..." });
       await tx.wait();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Contract created successfully!" });
+      setTransactionStatus({ visible: true, status: "success", message: "合同创建成功!" });
       setTimeout(() => {
         setTransactionStatus({ visible: false, status: "pending", message: "" });
       }, 2000);
       
-      await loadData();
+      await loadContracts();
       setShowCreateModal(false);
-      setNewContractData({ name: "", value: "", description: "", publicValue1: "", publicValue2: "" });
+      setNewContractData({ name: "", value: "", description: "", category: "法律", status: "active" });
     } catch (e: any) {
       const errorMessage = e.message?.includes("user rejected transaction") 
-        ? "Transaction rejected by user" 
-        : "Submission failed: " + (e.message || "Unknown error");
+        ? "用户取消交易" 
+        : "提交失败: " + (e.message || "未知错误");
       setTransactionStatus({ visible: true, status: "error", message: errorMessage });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     } finally { 
@@ -191,7 +200,7 @@ const App: React.FC = () => {
 
   const decryptData = async (businessId: string): Promise<number | null> => {
     if (!isConnected || !address) { 
-      setTransactionStatus({ visible: true, status: "error", message: "Please connect wallet first" });
+      setTransactionStatus({ visible: true, status: "error", message: "请先连接钱包" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
     }
@@ -204,8 +213,16 @@ const App: React.FC = () => {
       const businessData = await contractRead.getBusinessData(businessId);
       if (businessData.isVerified) {
         const storedValue = Number(businessData.decryptedValue) || 0;
-        setTransactionStatus({ visible: true, status: "success", message: "Data already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+        
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "数据已在链上验证" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
+        
         return storedValue;
       }
       
@@ -221,26 +238,39 @@ const App: React.FC = () => {
           contractWrite.verifyDecryption(businessId, abiEncodedClearValues, decryptionProof)
       );
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Verifying decryption on-chain..." });
+      setTransactionStatus({ visible: true, status: "pending", message: "链上验证解密中..." });
       
       const clearValue = result.decryptionResult.clearValues[encryptedValueHandle];
       
-      await loadData();
+      await loadContracts();
       
-      setTransactionStatus({ visible: true, status: "success", message: "Data decrypted and verified successfully!" });
-      setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
+      setTransactionStatus({ visible: true, status: "success", message: "数据解密验证成功!" });
+      setTimeout(() => {
+        setTransactionStatus({ visible: false, status: "pending", message: "" });
+      }, 2000);
       
       return Number(clearValue);
       
     } catch (e: any) { 
       if (e.message?.includes("Data already verified")) {
-        setTransactionStatus({ visible: true, status: "success", message: "Data is already verified on-chain" });
-        setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
-        await loadData();
+        setTransactionStatus({ 
+          visible: true, 
+          status: "success", 
+          message: "数据已在链上验证" 
+        });
+        setTimeout(() => {
+          setTransactionStatus({ visible: false, status: "pending", message: "" });
+        }, 2000);
+        
+        await loadContracts();
         return null;
       }
       
-      setTransactionStatus({ visible: true, status: "error", message: "Decryption failed: " + (e.message || "Unknown error") });
+      setTransactionStatus({ 
+        visible: true, 
+        status: "error", 
+        message: "解密失败: " + (e.message || "未知错误") 
+      });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
       return null; 
     } finally { 
@@ -250,32 +280,46 @@ const App: React.FC = () => {
 
   const callIsAvailable = async () => {
     try {
-      const contract = await getContractWithSigner();
+      const contract = await getContractReadOnly();
       if (!contract) return;
       
-      setTransactionStatus({ visible: true, status: "pending", message: "Calling isAvailable..." });
-      const tx = await contract.isAvailable();
-      await tx.wait();
-      
-      setTransactionStatus({ visible: true, status: "success", message: "isAvailable called successfully!" });
+      const result = await contract.isAvailable();
+      setTransactionStatus({ visible: true, status: "success", message: "合约可用性检查成功!" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 2000);
-    } catch (e: any) {
-      setTransactionStatus({ visible: true, status: "error", message: "Call failed: " + (e.message || "Unknown error") });
+    } catch (e) {
+      setTransactionStatus({ visible: true, status: "error", message: "可用性检查失败" });
       setTimeout(() => setTransactionStatus({ visible: false, status: "pending", message: "" }), 3000);
     }
   };
 
-  const filteredContracts = contracts.filter(contract =>
-    contract.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    contract.description.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const getContractStats = (): ContractStats => {
+    const totalContracts = contracts.length;
+    const verifiedContracts = contracts.filter(c => c.isVerified).length;
+    const activeContracts = contracts.filter(c => c.status === "active").length;
+    const avgValue = contracts.length > 0 
+      ? contracts.reduce((sum, c) => sum + c.publicValue1, 0) / contracts.length 
+      : 0;
+
+    return { totalContracts, verifiedContracts, activeContracts, avgValue };
+  };
+
+  const filteredContracts = contracts.filter(contract => {
+    const matchesSearch = contract.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+                         contract.description.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesTab = activeTab === "all" || 
+                      (activeTab === "verified" && contract.isVerified) ||
+                      (activeTab === "active" && contract.status === "active");
+    return matchesSearch && matchesTab;
+  });
+
+  const stats = getContractStats();
 
   if (!isConnected) {
     return (
       <div className="app-container">
         <header className="app-header">
           <div className="logo">
-            <h1>Legal Contract FHE 🔐</h1>
+            <h1>🔐 FHE法律合同</h1>
           </div>
           <div className="header-actions">
             <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
@@ -285,8 +329,22 @@ const App: React.FC = () => {
         <div className="connection-prompt">
           <div className="connection-content">
             <div className="connection-icon">⚖️</div>
-            <h2>Connect Your Wallet to Access Legal Contracts</h2>
-            <p>Please connect your wallet to initialize the encrypted legal contract system.</p>
+            <h2>连接钱包管理加密法律合同</h2>
+            <p>使用全同态加密技术保护您的敏感法律合同条款</p>
+            <div className="connection-steps">
+              <div className="step">
+                <span>1</span>
+                <p>连接钱包初始化FHE系统</p>
+              </div>
+              <div className="step">
+                <span>2</span>
+                <p>创建加密的法律合同</p>
+              </div>
+              <div className="step">
+                <span>3</span>
+                <p>安全验证和解密合同数据</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -297,7 +355,8 @@ const App: React.FC = () => {
     return (
       <div className="loading-screen">
         <div className="fhe-spinner"></div>
-        <p>Initializing FHE Encryption System...</p>
+        <p>初始化FHE加密系统...</p>
+        <p className="loading-note">请稍候片刻</p>
       </div>
     );
   }
@@ -305,86 +364,107 @@ const App: React.FC = () => {
   if (loading) return (
     <div className="loading-screen">
       <div className="fhe-spinner"></div>
-      <p>Loading encrypted contract system...</p>
+      <p>加载加密合同系统...</p>
     </div>
   );
 
   return (
     <div className="app-container">
       <header className="app-header">
-        <div className="logo">
-          <h1>Legal Contract FHE ⚖️🔐</h1>
+        <div className="logo-section">
+          <h1>⚖️ FHE法律合同平台</h1>
+          <p>全同态加密保护的法律合同管理系统</p>
         </div>
         
         <div className="header-actions">
-          <button onClick={callIsAvailable} className="test-btn">
-            Test Connection
-          </button>
-          <button onClick={() => setShowCreateModal(true)} className="create-btn">
-            + New Contract
-          </button>
+          <button className="faq-btn" onClick={() => setShowFAQ(true)}>常见问题</button>
+          <button className="create-btn" onClick={() => setShowCreateModal(true)}>+ 新建合同</button>
           <ConnectButton accountStatus="address" chainStatus="icon" showBalance={false}/>
         </div>
       </header>
       
       <div className="main-content">
-        <div className="stats-panels">
-          <div className="stat-panel">
-            <h3>Total Contracts</h3>
-            <div className="stat-value">{stats.total}</div>
+        <div className="stats-panel">
+          <div className="stat-card">
+            <div className="stat-icon">📄</div>
+            <div className="stat-info">
+              <div className="stat-value">{stats.totalContracts}</div>
+              <div className="stat-label">总合同数</div>
+            </div>
           </div>
-          <div className="stat-panel">
-            <h3>Verified</h3>
-            <div className="stat-value">{stats.verified}</div>
+          <div className="stat-card">
+            <div className="stat-icon">✅</div>
+            <div className="stat-info">
+              <div className="stat-value">{stats.verifiedContracts}</div>
+              <div className="stat-label">已验证合同</div>
+            </div>
           </div>
-          <div className="stat-panel">
-            <h3>Pending</h3>
-            <div className="stat-value">{stats.pending}</div>
+          <div className="stat-card">
+            <div className="stat-icon">⚡</div>
+            <div className="stat-info">
+              <div className="stat-value">{stats.activeContracts}</div>
+              <div className="stat-label">活跃合同</div>
+            </div>
+          </div>
+          <div className="stat-card">
+            <div className="stat-icon">💰</div>
+            <div className="stat-info">
+              <div className="stat-value">{stats.avgValue.toFixed(1)}</div>
+              <div className="stat-label">平均价值</div>
+            </div>
           </div>
         </div>
 
-        <div className="search-section">
-          <input
-            type="text"
-            placeholder="Search contracts..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-            className="search-input"
-          />
-          <button onClick={loadData} className="refresh-btn" disabled={isRefreshing}>
-            {isRefreshing ? "Refreshing..." : "Refresh"}
-          </button>
+        <div className="controls-panel">
+          <div className="search-box">
+            <input 
+              type="text" 
+              placeholder="搜索合同名称或描述..." 
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <div className="tab-controls">
+            <button className={`tab ${activeTab === "all" ? "active" : ""}`} onClick={() => setActiveTab("all")}>全部</button>
+            <button className={`tab ${activeTab === "verified" ? "active" : ""}`} onClick={() => setActiveTab("verified")}>已验证</button>
+            <button className={`tab ${activeTab === "active" ? "active" : ""}`} onClick={() => setActiveTab("active")}>活跃</button>
+          </div>
+          <div className="action-buttons">
+            <button onClick={loadContracts} disabled={isRefreshing} className="refresh-btn">
+              {isRefreshing ? "刷新中..." : "🔄"}
+            </button>
+            <button onClick={callIsAvailable} className="check-btn">检查合约</button>
+          </div>
         </div>
 
         <div className="contracts-list">
           {filteredContracts.length === 0 ? (
-            <div className="no-contracts">
-              <p>No contracts found</p>
-              <button onClick={() => setShowCreateModal(true)} className="create-btn">
-                Create First Contract
-              </button>
+            <div className="empty-state">
+              <div className="empty-icon">📝</div>
+              <p>暂无合同数据</p>
+              <button className="create-btn" onClick={() => setShowCreateModal(true)}>创建第一个合同</button>
             </div>
           ) : (
             filteredContracts.map((contract, index) => (
               <div 
-                className={`contract-item ${contract.isVerified ? "verified" : "pending"}`}
+                className={`contract-item ${selectedContract?.id === contract.id ? "selected" : ""} ${contract.isVerified ? "verified" : ""}`}
                 key={index}
                 onClick={() => setSelectedContract(contract)}
               >
                 <div className="contract-header">
                   <h3>{contract.name}</h3>
                   <span className={`status-badge ${contract.isVerified ? "verified" : "pending"}`}>
-                    {contract.isVerified ? "✅ Verified" : "⏳ Pending"}
+                    {contract.isVerified ? "✅ 已验证" : "🔒 待验证"}
                   </span>
                 </div>
                 <p className="contract-desc">{contract.description}</p>
                 <div className="contract-meta">
-                  <span>Creator: {contract.creator.substring(0, 6)}...{contract.creator.substring(38)}</span>
-                  <span>Date: {new Date(contract.timestamp * 1000).toLocaleDateString()}</span>
+                  <span>创建者: {contract.creator.substring(0, 6)}...{contract.creator.substring(38)}</span>
+                  <span>日期: {new Date(contract.timestamp * 1000).toLocaleDateString()}</span>
                 </div>
-                {contract.isVerified && contract.decryptedValue && (
+                {contract.isVerified && (
                   <div className="decrypted-value">
-                    Value: {contract.decryptedValue}
+                    解密值: {contract.decryptedValue}
                   </div>
                 )}
               </div>
@@ -394,7 +474,7 @@ const App: React.FC = () => {
       </div>
       
       {showCreateModal && (
-        <ModalCreateContract 
+        <CreateContractModal 
           onSubmit={createContract} 
           onClose={() => setShowCreateModal(false)} 
           creating={creatingContract} 
@@ -407,40 +487,37 @@ const App: React.FC = () => {
       {selectedContract && (
         <ContractDetailModal 
           contract={selectedContract} 
-          onClose={() => setSelectedContract(null)} 
+          onClose={() => { 
+            setSelectedContract(null); 
+            setDecryptedData(null); 
+          }} 
+          decryptedData={decryptedData} 
           isDecrypting={isDecrypting || fheIsDecrypting} 
           decryptData={() => decryptData(selectedContract.id)}
         />
       )}
       
+      {showFAQ && (
+        <FAQModal onClose={() => setShowFAQ(false)} />
+      )}
+      
       {transactionStatus.visible && (
-        <div className="transaction-modal">
-          <div className="transaction-content">
-            <div className={`transaction-icon ${transactionStatus.status}`}>
-              {transactionStatus.status === "pending" && <div className="fhe-spinner"></div>}
-              {transactionStatus.status === "success" && "✓"}
-              {transactionStatus.status === "error" && "✗"}
-            </div>
-            <div className="transaction-message">{transactionStatus.message}</div>
+        <div className={`transaction-toast ${transactionStatus.status}`}>
+          <div className="toast-content">
+            <span className="toast-icon">
+              {transactionStatus.status === "pending" && "⏳"}
+              {transactionStatus.status === "success" && "✅"}
+              {transactionStatus.status === "error" && "❌"}
+            </span>
+            {transactionStatus.message}
           </div>
         </div>
       )}
-
-      <footer className="app-footer">
-        <div className="footer-content">
-          <p>FHE Legal Contract System - Powered by Zama FHE Technology</p>
-          <div className="footer-links">
-            <span>Terms</span>
-                <span>Privacy</span>
-                <span>Documentation</span>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 };
 
-const ModalCreateContract: React.FC<{
+const CreateContractModal: React.FC<{
   onSubmit: () => void; 
   onClose: () => void; 
   creating: boolean;
@@ -448,7 +525,7 @@ const ModalCreateContract: React.FC<{
   setContractData: (data: any) => void;
   isEncrypting: boolean;
 }> = ({ onSubmit, onClose, creating, contractData, setContractData, isEncrypting }) => {
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     if (name === 'value') {
       const intValue = value.replace(/[^\d]/g, '');
@@ -460,86 +537,71 @@ const ModalCreateContract: React.FC<{
 
   return (
     <div className="modal-overlay">
-      <div className="create-contract-modal">
+      <div className="modal-content">
         <div className="modal-header">
-          <h2>New Legal Contract</h2>
-          <button onClick={onClose} className="close-modal">&times;</button>
+          <h2>创建新合同</h2>
+          <button onClick={onClose} className="close-btn">&times;</button>
         </div>
         
         <div className="modal-body">
           <div className="fhe-notice">
-            <strong>FHE 🔐 Encryption</strong>
-            <p>Contract value will be encrypted with Zama FHE (Integer only)</p>
+            <strong>🔐 FHE加密保护</strong>
+            <p>合同数值将使用Zama FHE进行加密（仅支持整数）</p>
           </div>
           
           <div className="form-group">
-            <label>Contract Name *</label>
+            <label>合同名称 *</label>
             <input 
               type="text" 
               name="name" 
               value={contractData.name} 
               onChange={handleChange} 
-              placeholder="Enter contract name..." 
+              placeholder="输入合同名称..." 
             />
           </div>
           
           <div className="form-group">
-            <label>Encrypted Value (Integer only) *</label>
+            <label>合同数值（整数） *</label>
             <input 
               type="number" 
               name="value" 
               value={contractData.value} 
               onChange={handleChange} 
-              placeholder="Enter encrypted value..." 
-              step="1"
+              placeholder="输入合同数值..." 
               min="0"
             />
-            <div className="data-type-label">FHE Encrypted Integer</div>
+            <div className="input-hint">FHE加密整数</div>
           </div>
           
           <div className="form-group">
-            <label>Public Value 1 *</label>
-            <input 
-              type="number" 
-              name="publicValue1" 
-              value={contractData.publicValue1} 
-              onChange={handleChange} 
-              placeholder="Enter public value 1..." 
-            />
-            <div className="data-type-label">Public Data</div>
-          </div>
-          
-          <div className="form-group">
-            <label>Public Value 2</label>
-            <input 
-              type="number" 
-              name="publicValue2" 
-              value={contractData.publicValue2} 
-              onChange={handleChange} 
-              placeholder="Enter public value 2..." 
-            />
-          </div>
-          
-          <div className="form-group">
-            <label>Description</label>
+            <label>合同描述</label>
             <textarea 
               name="description" 
               value={contractData.description} 
               onChange={handleChange} 
-              placeholder="Enter contract description..." 
+              placeholder="输入合同描述..." 
               rows={3}
             />
+          </div>
+          
+          <div className="form-group">
+            <label>合同分类</label>
+            <select name="category" value={contractData.category} onChange={handleChange}>
+              <option value="法律">法律</option>
+              <option value="商业">商业</option>
+              <option value="技术">技术</option>
+            </select>
           </div>
         </div>
         
         <div className="modal-footer">
-          <button onClick={onClose} className="cancel-btn">Cancel</button>
+          <button onClick={onClose} className="cancel-btn">取消</button>
           <button 
             onClick={onSubmit} 
             disabled={creating || isEncrypting || !contractData.name || !contractData.value} 
             className="submit-btn"
           >
-            {creating || isEncrypting ? "Encrypting and Creating..." : "Create Contract"}
+            {creating || isEncrypting ? "加密并创建中..." : "创建合同"}
           </button>
         </div>
       </div>
@@ -548,84 +610,181 @@ const ModalCreateContract: React.FC<{
 };
 
 const ContractDetailModal: React.FC<{
-  contract: ContractData;
+  contract: LegalContract;
   onClose: () => void;
+  decryptedData: number | null;
   isDecrypting: boolean;
   decryptData: () => Promise<number | null>;
-}> = ({ contract, onClose, isDecrypting, decryptData }) => {
+}> = ({ contract, onClose, decryptedData, isDecrypting, decryptData }) => {
+  const [localDecrypted, setLocalDecrypted] = useState<number | null>(decryptedData);
+
   const handleDecrypt = async () => {
-    await decryptData();
+    if (localDecrypted !== null) {
+      setLocalDecrypted(null);
+      return;
+    }
+    
+    const decrypted = await decryptData();
+    if (decrypted !== null) {
+      setLocalDecrypted(decrypted);
+    }
   };
 
   return (
     <div className="modal-overlay">
-      <div className="contract-detail-modal">
+      <div className="modal-content large">
         <div className="modal-header">
-          <h2>Contract Details</h2>
-          <button onClick={onClose} className="close-modal">&times;</button>
+          <h2>合同详情</h2>
+          <button onClick={onClose} className="close-btn">&times;</button>
         </div>
         
         <div className="modal-body">
-          <div className="contract-info">
+          <div className="contract-info-grid">
             <div className="info-item">
-              <span>Contract Name:</span>
-              <strong>{contract.name}</strong>
-            </div>
-            <div className="info-item">
-              <span>Creator:</span>
-              <strong>{contract.creator.substring(0, 6)}...{contract.creator.substring(38)}</strong>
+              <label>合同名称:</label>
+              <span>{contract.name}</span>
             </div>
             <div className="info-item">
-              <span>Date Created:</span>
-              <strong>{new Date(contract.timestamp * 1000).toLocaleDateString()}</strong>
+              <label>创建者:</label>
+              <span>{contract.creator}</span>
             </div>
             <div className="info-item">
-              <span>Public Value 1:</span>
-              <strong>{contract.publicValue1}</strong>
+              <label>创建时间:</label>
+              <span>{new Date(contract.timestamp * 1000).toLocaleString()}</span>
             </div>
             <div className="info-item">
-              <span>Public Value 2:</span>
-              <strong>{contract.publicValue2}</strong>
-            </div>
-          </div>
-          
-          <div className="data-section">
-            <h3>Encrypted Contract Data</h3>
-            
-            <div className="data-row">
-              <div className="data-label">Encrypted Value:</div>
-              <div className="data-value">
-                {contract.isVerified && contract.decryptedValue ? 
-                  `${contract.decryptedValue} (Verified)` : 
-                  "🔒 FHE Encrypted"
-                }
-              </div>
-              <button 
-                className={`decrypt-btn ${contract.isVerified ? 'verified' : ''}`}
-                onClick={handleDecrypt} 
-                disabled={isDecrypting}
-              >
-                {isDecrypting ? "Decrypting..." : contract.isVerified ? "✅ Verified" : "🔓 Decrypt"}
-              </button>
-            </div>
-            
-            <div className="fhe-info">
-              <div className="fhe-icon">🔐</div>
-              <div>
-                <strong>FHE Protected Legal Contract</strong>
-                <p>Contract terms are encrypted on-chain using Zama FHE technology</p>
-              </div>
+              <label>状态:</label>
+              <span className={`status ${contract.isVerified ? "verified" : "pending"}`}>
+                {contract.isVerified ? "✅ 已验证" : "🔒 待验证"}
+              </span>
             </div>
           </div>
           
           <div className="description-section">
-            <h3>Description</h3>
+            <label>合同描述:</label>
             <p>{contract.description}</p>
+          </div>
+          
+          <div className="encryption-section">
+            <h3>🔐 加密数据管理</h3>
+            <div className="data-row">
+              <div className="data-label">加密数值:</div>
+              <div className="data-value">
+                {contract.isVerified ? 
+                  `${contract.decryptedValue} (链上已验证)` : 
+                  localDecrypted !== null ? 
+                  `${localDecrypted} (本地解密)` : 
+                  "🔒 FHE加密整数"
+                }
+              </div>
+              <button 
+                className={`decrypt-btn ${(contract.isVerified || localDecrypted !== null) ? 'decrypted' : ''}`}
+                onClick={handleDecrypt} 
+                disabled={isDecrypting}
+              >
+                {isDecrypting ? "验证中..." : 
+                 contract.isVerified ? "✅ 已验证" : 
+                 localDecrypted !== null ? "🔄 重新验证" : 
+                 "🔓 验证解密"}
+              </button>
+            </div>
+            
+            <div className="fhe-process">
+              <h4>FHE解密流程</h4>
+              <div className="process-steps">
+                <div className="step">1. 链上加密数据</div>
+                <div className="step">2. 客户端离线解密</div>
+                <div className="step">3. 提交验证证明</div>
+                <div className="step">4. 链上验证签名</div>
+              </div>
+            </div>
+          </div>
+          
+          {(contract.isVerified || localDecrypted !== null) && (
+            <div className="analysis-section">
+              <h3>📊 合同分析</h3>
+              <div className="analysis-grid">
+                <div className="analysis-item">
+                  <label>当前数值</label>
+                  <div className="analysis-value">
+                    {contract.isVerified ? contract.decryptedValue : localDecrypted}
+                  </div>
+                </div>
+                <div className="analysis-item">
+                  <label>加密状态</label>
+                  <div className="analysis-status verified">FHE保护</div>
+                </div>
+                <div className="analysis-item">
+                  <label>验证方式</label>
+                  <div className="analysis-method">
+                    {contract.isVerified ? "链上验证" : "本地解密"}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+        
+        <div className="modal-footer">
+          <button onClick={onClose} className="cancel-btn">关闭</button>
+          {!contract.isVerified && (
+            <button 
+              onClick={handleDecrypt} 
+              disabled={isDecrypting}
+              className="verify-btn"
+            >
+              {isDecrypting ? "链上验证中..." : "链上验证"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const FAQModal: React.FC<{
+  onClose: () => void;
+}> = ({ onClose }) => {
+  const faqs = [
+    {
+      question: "什么是FHE全同态加密？",
+      answer: "全同态加密允许在加密数据上直接进行计算，无需解密即可处理敏感信息。"
+    },
+    {
+      question: "合同数据如何加密？",
+      answer: "合同数值在客户端使用Zama FHE加密后存储到区块链，只有授权用户才能解密。"
+    },
+    {
+      question: "解密验证如何工作？",
+      answer: "客户端离线解密后提交证明到智能合约，合约验证解密正确性而不暴露原始数据。"
+    },
+    {
+      question: "支持哪些数据类型？",
+      answer: "目前仅支持整数类型的数值加密，未来将支持更复杂的数据结构。"
+    }
+  ];
+
+  return (
+    <div className="modal-overlay">
+      <div className="modal-content">
+        <div className="modal-header">
+          <h2>❓ 常见问题解答</h2>
+          <button onClick={onClose} className="close-btn">&times;</button>
+        </div>
+        
+        <div className="modal-body">
+          <div className="faq-list">
+            {faqs.map((faq, index) => (
+              <div key={index} className="faq-item">
+                <h4>{faq.question}</h4>
+                <p>{faq.answer}</p>
+              </div>
+            ))}
           </div>
         </div>
         
         <div className="modal-footer">
-          <button onClick={onClose} className="close-btn">Close</button>
+          <button onClick={onClose} className="cancel-btn">关闭</button>
         </div>
       </div>
     </div>
